@@ -488,15 +488,27 @@ func queryChannels() ([]int64, error) {
 	return res, err
 }
 
-func queryHaveRead(userID, chID int64) (int64, error) {
-	messageId, err := redisClient.Get(fmt.Sprintf("haveread/%d/%d", userID, chID)).Int64()
-	if err == redis.Nil {
-		return 0, nil
+func queryHaveReads(userID int64, chIDs []int64) ([]int64, error) {
+	keys := make([]string, len(chIDs))
+	for i, chID := range chIDs {
+		keys[i] = fmt.Sprintf("haveread/%d/%d", userID, chID)
 	}
+	results, err := redisClient.MGet(keys...).Result()
 	if err != nil {
-		return 0, err
+		return []int64{}, err
 	}
-	return messageId, nil
+	messageIds := make([]int64, len(results))
+	for i, result := range results {
+		if result == nil {
+			messageIds[i] = 0
+		} else {
+			messageIds[i], err = strconv.ParseInt(result.(string), 10, 64)
+			if err != nil {
+				return messageIds, err
+			}
+		}
+	}
+	return messageIds, nil
 }
 
 func fetchUnread(c echo.Context) error {
@@ -513,12 +525,13 @@ func fetchUnread(c echo.Context) error {
 	}
 
 	resp := []map[string]interface{}{}
+	lastIDs, err := queryHaveReads(userID, channels)
+	if err != nil {
+		return err
+	}
 
-	for _, chID := range channels {
-		lastID, err := queryHaveRead(userID, chID)
-		if err != nil {
-			return err
-		}
+	for i, chID := range channels {
+		lastID := lastIDs[i]
 
 		var cnt int64
 		if lastID > 0 {
