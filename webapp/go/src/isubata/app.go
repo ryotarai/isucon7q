@@ -301,10 +301,10 @@ func getInitializeRedis(c echo.Context) error {
 	log.Printf("Loaded %d images", len(imgs))
 	for _, client := range redisClients {
 		client.FlushDB()
-		for _, img := range imgs {
-			if err := getRedisClient(iconKey(img.Name)).Set(fmt.Sprintf("icons/%s", img.Name), img.Data, 0).Err(); err != nil {
-				return err
-			}
+	}
+	for _, img := range imgs {
+		if err := getRedisClient(iconKey(img.Name)).Set(fmt.Sprintf("icons/%s", img.Name), img.Data, 0).Err(); err != nil {
+			return err
 		}
 	}
 	log.Printf("Saved images into Redis", len(imgs))
