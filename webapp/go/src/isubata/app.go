@@ -232,6 +232,13 @@ func getInitialize(c echo.Context) error {
 	db.MustExec("DELETE FROM channel WHERE id > 10")
 	db.MustExec("DELETE FROM message WHERE id > 10000")
 	db.MustExec("DELETE FROM haveread")
+
+	keys, err := redisClient.Keys("haveread/*").Result()
+	if err != nil {
+		panic(err)
+	}
+	redisClient.Del(keys...)
+
 	return c.String(204, "")
 }
 
@@ -444,10 +451,7 @@ func getMessage(c echo.Context) error {
 	}
 
 	if len(messages) > 0 {
-		_, err := db.Exec("INSERT INTO haveread (user_id, channel_id, message_id, updated_at, created_at)"+
-			" VALUES (?, ?, ?, NOW(), NOW())"+
-			" ON DUPLICATE KEY UPDATE message_id = ?, updated_at = NOW()",
-			userID, chanID, messages[0].ID, messages[0].ID)
+		err := redisClient.Set(fmt.Sprintf("haveread/%d/%d", userID, chanID), messages[0].ID, 0).Err()
 		if err != nil {
 			return err
 		}
@@ -463,20 +467,14 @@ func queryChannels() ([]int64, error) {
 }
 
 func queryHaveRead(userID, chID int64) (int64, error) {
-	type HaveRead struct {
-		MessageID int64 `db:"message_id"`
-	}
-	h := HaveRead{}
-
-	err := db.Get(&h, "SELECT message_id FROM haveread WHERE user_id = ? AND channel_id = ?",
-		userID, chID)
-
-	if err == sql.ErrNoRows {
+	messageId, err := redisClient.Get(fmt.Sprintf("haveread/%d/%d", userID, chID)).Int64()
+	if err == redis.Nil {
 		return 0, nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return 0, err
 	}
-	return h.MessageID, nil
+	return messageId, nil
 }
 
 func fetchUnread(c echo.Context) error {
