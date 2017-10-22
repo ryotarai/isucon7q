@@ -40,17 +40,24 @@ var (
 )
 
 func getRedisClient(key int64) *redis.Client {
-	k := key % 4
-	if k == 3 {
-		k = 2
+	return redisClients[computeRedisKey(key)]
+}
+
+func computeRedisKey(key int64) int64 {
+	k := key % 9
+	if k < 2 {
+		return 0
+	} else if k < 4 {
+		return 1
+	} else {
+		return 2
 	}
-	return redisClients[k]
 }
 
 func iconKey(digest string) int64 {
 	key := int64(0)
 	for _, c := range digest {
-		key = (key + int64(c)) % 4
+		key = (key + int64(c)) % 9
 	}
 	return key
 }
