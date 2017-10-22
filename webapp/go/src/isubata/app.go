@@ -403,9 +403,10 @@ func getLogout(c echo.Context) error {
 }
 
 func postMessage(c echo.Context) error {
-	user, err := ensureLogin(c)
-	if user == nil {
-		return err
+	userID := sessUserID(c)
+	if userID == 0 {
+		c.Redirect(http.StatusSeeOther, "/login")
+		return nil
 	}
 
 	message := c.FormValue("message")
@@ -420,7 +421,7 @@ func postMessage(c echo.Context) error {
 		chanID = int64(x)
 	}
 
-	if _, err := addMessage(chanID, user.ID, message); err != nil {
+	if _, err := addMessage(chanID, userID, message); err != nil {
 		return err
 	}
 
@@ -662,9 +663,10 @@ func getAddChannel(c echo.Context) error {
 }
 
 func postAddChannel(c echo.Context) error {
-	self, err := ensureLogin(c)
-	if self == nil {
-		return err
+	userID := sessUserID(c)
+	if userID == 0 {
+		c.Redirect(http.StatusSeeOther, "/login")
+		return nil
 	}
 
 	name := c.FormValue("name")
@@ -685,9 +687,10 @@ func postAddChannel(c echo.Context) error {
 }
 
 func postProfile(c echo.Context) error {
-	self, err := ensureLogin(c)
-	if self == nil {
-		return err
+	userID := sessUserID(c)
+	if userID == 0 {
+		c.Redirect(http.StatusSeeOther, "/login")
+		return nil
 	}
 
 	avatarName := ""
@@ -725,18 +728,18 @@ func postProfile(c echo.Context) error {
 	}
 
 	if avatarName != "" && len(avatarData) > 0 {
-		err = redisClient.Set(fmt.Sprintf("icons/%s", avatarName), avatarData, 0).Err()
+		err := redisClient.Set(fmt.Sprintf("icons/%s", avatarName), avatarData, 0).Err()
 		if err != nil {
 			return err
 		}
-		_, err = db.Exec("UPDATE user SET avatar_icon = ? WHERE id = ?", avatarName, self.ID)
+		_, err = db.Exec("UPDATE user SET avatar_icon = ? WHERE id = ?", avatarName, userID)
 		if err != nil {
 			return err
 		}
 	}
 
 	if name := c.FormValue("display_name"); name != "" {
-		_, err := db.Exec("UPDATE user SET display_name = ? WHERE id = ?", name, self.ID)
+		_, err := db.Exec("UPDATE user SET display_name = ? WHERE id = ?", name, userID)
 		if err != nil {
 			return err
 		}
