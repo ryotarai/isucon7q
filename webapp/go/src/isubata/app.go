@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -471,7 +472,13 @@ func getMessage(c echo.Context) error {
 		}
 	}
 
-	return c.JSON(http.StatusOK, response)
+	return streamJSON(c, response)
+}
+
+func streamJSON(c echo.Context, data interface{}) error {
+	c.Response().Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSONCharsetUTF8)
+	c.Response().WriteHeader(http.StatusOK)
+	return json.NewEncoder(c.Response()).Encode(data)
 }
 
 func queryChannels() ([]int64, error) {
@@ -534,7 +541,7 @@ func fetchUnread(c echo.Context) error {
 		resp = append(resp, r)
 	}
 
-	return c.JSON(http.StatusOK, resp)
+	return streamJSON(c, resp)
 }
 
 func getHistory(c echo.Context) error {
