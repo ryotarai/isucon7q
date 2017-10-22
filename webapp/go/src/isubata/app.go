@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis"
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
@@ -33,6 +34,7 @@ const (
 var (
 	db            *sqlx.DB
 	ErrBadReqeust = echo.NewHTTPError(http.StatusBadRequest)
+	redisClient   *redis.Client
 )
 
 type Renderer struct {
@@ -70,6 +72,17 @@ func init() {
 
 	log.Printf("Connecting to db: %q", dsn)
 	db, _ = sqlx.Connect("mysql", dsn)
+
+	redisAddr := os.Getenv("ISUBATA_REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: "",
+		DB:       0,
+	})
+
 	for {
 		err := db.Ping()
 		if err == nil {
@@ -82,6 +95,16 @@ func init() {
 	db.SetMaxOpenConns(20)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	log.Printf("Succeeded to connect db.")
+
+	for {
+		_, err := redisClient.Ping().Result()
+		if err == nil {
+			break
+		}
+		log.Println(err)
+		time.Sleep(time.Second * 3)
+	}
+	log.Printf("Succeeded to connect Redis.")
 }
 
 type User struct {
@@ -209,6 +232,29 @@ func getInitialize(c echo.Context) error {
 	db.MustExec("DELETE FROM channel WHERE id > 10")
 	db.MustExec("DELETE FROM message WHERE id > 10000")
 	db.MustExec("DELETE FROM haveread")
+	return c.String(204, "")
+}
+
+func getInitializeRedis(c echo.Context) error {
+	type Image struct {
+		Name string `db:"name"`
+		Data []byte `db:"data"`
+	}
+	imgs := []Image{}
+	log.Println("Start loading images from MySQL")
+	err := db.Select(&imgs, "select name, data from image")
+	if err != nil {
+		return err
+	}
+	log.Printf("Loaded %d images", len(imgs))
+	redisClient.FlushDB()
+	for _, img := range imgs {
+		if err := redisClient.Set(fmt.Sprintf("icons/%s", img.Name), img.Data, 0).Err(); err != nil {
+			return err
+		}
+	}
+	log.Printf("Saved images into Redis", len(imgs))
+
 	return c.String(204, "")
 }
 
@@ -663,7 +709,7 @@ func postProfile(c echo.Context) error {
 	}
 
 	if avatarName != "" && len(avatarData) > 0 {
-		_, err := db.Exec("INSERT INTO image (name, data) VALUES (?, ?)", avatarName, avatarData)
+		err = redisClient.Set(fmt.Sprintf("icons/%s", avatarName), avatarData, 0).Err()
 		if err != nil {
 			return err
 		}
@@ -684,11 +730,9 @@ func postProfile(c echo.Context) error {
 }
 
 func getIcon(c echo.Context) error {
-	var name string
-	var data []byte
-	err := db.QueryRow("SELECT name, data FROM image WHERE name = ?",
-		c.Param("file_name")).Scan(&name, &data)
-	if err == sql.ErrNoRows {
+	name := c.Param("file_name")
+	data, err := redisClient.Get(fmt.Sprintf("icons/%s", name)).Bytes()
+	if err == redis.Nil {
 		return echo.ErrNotFound
 	}
 	if err != nil {
@@ -753,6 +797,7 @@ func main() {
 	e.Use(middleware.Static("../public"))
 
 	e.GET("/initialize", getInitialize)
+	e.GET("/initialize_redis", getInitializeRedis)
 	e.GET("/", getIndex)
 	e.GET("/register", getRegister)
 	e.POST("/register", postRegister)
