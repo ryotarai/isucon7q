@@ -606,10 +606,13 @@ func getHistory(c echo.Context) error {
 
 	const N = 20
 	var cnt int64
-	err = db.Get(&cnt, "SELECT COUNT(*) as cnt FROM message WHERE channel_id = ?", chID)
-	if err != nil {
-		return err
+	res := redisClient.HGet("message_count", fmt.Sprintf("%d", chID))
+	cnt, err = res.Int64()
+	if err == redis.Nil {
+		cnt = 0
+		err = nil
 	}
+
 	maxPage := int64(cnt+N-1) / N
 	if maxPage == 0 {
 		maxPage = 1
