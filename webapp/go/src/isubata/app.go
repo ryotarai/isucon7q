@@ -750,6 +750,7 @@ func getIcon(c echo.Context) error {
 	default:
 		return echo.ErrNotFound
 	}
+	c.Response().Header().Set("ETag", name[0:len(name)-4])
 	return c.Blob(http.StatusOK, mime, data)
 }
 
