@@ -530,6 +530,31 @@ func fetchUnread(c echo.Context) error {
 		return err
 	}
 
+	zeroChannels := make([]int64, 0)
+	zeroChannelsStr := make([]string, 0)
+	for i, chID := range channels {
+		lastID := lastIDs[i]
+		if lastID == 0 {
+			zeroChannels = append(zeroChannels, chID)
+			zeroChannelsStr = append(zeroChannelsStr, strconv.FormatInt(chID, 10))
+		}
+	}
+	results, err := redisClient.HMGet("message_count", zeroChannelsStr...).Result()
+	if err != nil {
+		return err
+	}
+	messageCounts := make(map[int64]int64, len(zeroChannels))
+	for i, result := range results {
+		if result == nil {
+			messageCounts[zeroChannels[i]] = 0
+		} else {
+			messageCounts[zeroChannels[i]], err = strconv.ParseInt(result.(string), 10, 64)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	for i, chID := range channels {
 		lastID := lastIDs[i]
 
@@ -539,11 +564,10 @@ func fetchUnread(c echo.Context) error {
 				"SELECT COUNT(*) as cnt FROM message WHERE channel_id = ? AND ? < id",
 				chID, lastID)
 		} else {
-			res := redisClient.HGet("message_count", fmt.Sprintf("%d", chID))
-			cnt, err = res.Int64()
-			if err == redis.Nil {
+			if c, ok := messageCounts[chID]; ok {
+				cnt = c
+			} else {
 				cnt = 0
-				err = nil
 			}
 		}
 		if err != nil {
