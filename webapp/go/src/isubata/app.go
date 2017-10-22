@@ -731,6 +731,14 @@ func postProfile(c echo.Context) error {
 
 func getIcon(c echo.Context) error {
 	name := c.Param("file_name")
+
+	c.Response().Header().Set("ETag", name[0:len(name)-4])
+	c.Response().Header().Set("Last-Modified", "Mon, 16 Oct 2017 16:33:02 GMT")
+
+	if c.Request().Header.Get("If-Modified-Since") != "" || c.Request().Header.Get("If-None-Match") != "" {
+		return c.NoContent(304)
+	}
+
 	data, err := redisClient.Get(fmt.Sprintf("icons/%s", name)).Bytes()
 	if err == redis.Nil {
 		return echo.ErrNotFound
@@ -750,7 +758,6 @@ func getIcon(c echo.Context) error {
 	default:
 		return echo.ErrNotFound
 	}
-	c.Response().Header().Set("ETag", name[0:len(name)-4])
 	return c.Blob(http.StatusOK, mime, data)
 }
 
