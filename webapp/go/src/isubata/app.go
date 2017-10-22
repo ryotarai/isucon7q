@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -853,5 +854,15 @@ func main() {
 	e.POST("add_channel", postAddChannel)
 	e.GET("/icons/:file_name", getIcon)
 
-	e.Start(":5000")
+	if path := os.Getenv("ISUBATA_UNIX_SOCKET"); path != "" {
+		os.Remove(path)
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			e.Logger.Fatal(err)
+		}
+		e.Listener = l
+		e.Start("")
+	} else {
+		e.Start(":5000")
+	}
 }
