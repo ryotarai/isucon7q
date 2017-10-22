@@ -74,7 +74,6 @@ func init() {
 
 	log.Printf("Connecting to db: %q", dsn)
 	db, _ = sqlx.Connect("mysql", dsn)
-	db.SetMaxIdleConns(100)
 
 	redisAddr := os.Getenv("ISUBATA_REDIS_ADDR")
 	if redisAddr == "" {
