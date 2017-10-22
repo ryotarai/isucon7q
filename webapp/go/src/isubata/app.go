@@ -520,6 +520,10 @@ func fetchUnread(c echo.Context) error {
 		} else {
 			res := redisClient.HGet("message_count", fmt.Sprintf("%d", chID))
 			cnt, err = res.Int64()
+			if err == redis.Nil {
+				cnt = 0
+				err = nil
+			}
 		}
 		if err != nil {
 			return err
