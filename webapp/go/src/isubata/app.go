@@ -860,6 +860,11 @@ func main() {
 		if err != nil {
 			e.Logger.Fatal(err)
 		}
+
+		if err := os.Chmod(path, 0777); err != nil {
+			e.Logger.Fatal(err)
+		}
+
 		e.Listener = l
 		e.Start("")
 	} else {
