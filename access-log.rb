@@ -33,7 +33,7 @@ class Log
       when '/register'
         'GET /register'
       when %r{\A/message\?channel_id=\d+&last_message_id=\d+\z}
-        '/message?channel_id=:id&last_message_id=:id'
+        'GET /message?channel_id=:id&last_message_id=:id'
       when '/fetch'
         'GET /fetch'
       when '/login'
