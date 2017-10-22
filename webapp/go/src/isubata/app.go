@@ -36,8 +36,20 @@ const (
 var (
 	db            *sqlx.DB
 	ErrBadReqeust = echo.NewHTTPError(http.StatusBadRequest)
-	redisClient   *redis.Client
+	redisClients  []*redis.Client
 )
+
+func getRedisClient(key int64) *redis.Client {
+	return redisClients[key%3]
+}
+
+func iconKey(digest string) int64 {
+	key := int64(0)
+	for _, c := range digest {
+		key = (key + int64(c)) % 3
+	}
+	return key
+}
 
 type Renderer struct {
 	templates *template.Template
@@ -75,15 +87,18 @@ func init() {
 	log.Printf("Connecting to db: %q", dsn)
 	db, _ = sqlx.Connect("mysql", dsn)
 
-	redisAddr := os.Getenv("ISUBATA_REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "localhost:6379"
+	for _, i := range []int{0, 1, 2} {
+		redisAddr := os.Getenv(fmt.Sprintf("ISUBATA_REDIS_ADDR%d", i))
+		if redisAddr == "" {
+			redisAddr = "localhost:6379"
+		}
+		client := redis.NewClient(&redis.Options{
+			Addr:     redisAddr,
+			Password: "",
+			DB:       0,
+		})
+		redisClients = append(redisClients, client)
 	}
-	redisClient = redis.NewClient(&redis.Options{
-		Addr:     redisAddr,
-		Password: "",
-		DB:       0,
-	})
 
 	for {
 		err := db.Ping()
@@ -98,15 +113,17 @@ func init() {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	log.Printf("Succeeded to connect db.")
 
-	for {
-		_, err := redisClient.Ping().Result()
-		if err == nil {
-			break
+	for _, i := range []int{0, 1, 2} {
+		for {
+			_, err := redisClients[i].Ping().Result()
+			if err == nil {
+				break
+			}
+			log.Println(err)
+			time.Sleep(time.Second * 3)
 		}
-		log.Println(err)
-		time.Sleep(time.Second * 3)
+		log.Printf("Succeeded to connect Redis %d.", i)
 	}
-	log.Printf("Succeeded to connect Redis.")
 }
 
 type User struct {
@@ -137,7 +154,7 @@ func addMessage(channelID, userID int64, content string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	redisClient.HIncrBy("message_count", fmt.Sprintf("%d", channelID), 1)
+	getRedisClient(channelID).HIncrBy("message_count", fmt.Sprintf("%d", channelID), 1)
 	return res.LastInsertId()
 }
 
@@ -245,23 +262,26 @@ func getInitialize(c echo.Context) error {
 	db.MustExec("DELETE FROM message WHERE id > 10000")
 	db.MustExec("DELETE FROM haveread")
 
-	keys, err := redisClient.Keys("haveread/*").Result()
-	if err != nil {
-		panic(err)
-	}
-	redisClient.Del(keys...)
+	for _, client := range redisClients {
+		keys, err := client.Keys("haveread/*").Result()
+		if err != nil {
+			panic(err)
+		}
+		client.Del(keys...)
 
-	redisClient.Del("message_count")
+		client.Del("message_count")
+	}
+
 	counts := []struct {
-		Count     int `db:"cnt"`
-		ChannelID int `db:"channel_id"`
+		Count     int   `db:"cnt"`
+		ChannelID int64 `db:"channel_id"`
 	}{}
-	err = db.Select(&counts, "SELECT COUNT(*) as cnt, channel_id FROM message group by channel_id")
+	err := db.Select(&counts, "SELECT COUNT(*) as cnt, channel_id FROM message group by channel_id")
 	if err != nil {
 		return err
 	}
 	for _, c := range counts {
-		redisClient.HSet("message_count", fmt.Sprintf("%d", c.ChannelID), c.Count)
+		getRedisClient(c.ChannelID).HSet("message_count", fmt.Sprintf("%d", c.ChannelID), c.Count)
 	}
 
 	return c.String(204, "")
@@ -279,10 +299,12 @@ func getInitializeRedis(c echo.Context) error {
 		return err
 	}
 	log.Printf("Loaded %d images", len(imgs))
-	redisClient.FlushDB()
-	for _, img := range imgs {
-		if err := redisClient.Set(fmt.Sprintf("icons/%s", img.Name), img.Data, 0).Err(); err != nil {
-			return err
+	for _, client := range redisClients {
+		client.FlushDB()
+		for _, img := range imgs {
+			if err := getRedisClient(iconKey(img.Name)).Set(fmt.Sprintf("icons/%s", img.Name), img.Data, 0).Err(); err != nil {
+				return err
+			}
 		}
 	}
 	log.Printf("Saved images into Redis", len(imgs))
@@ -467,7 +489,7 @@ func getMessage(c echo.Context) error {
 	}
 
 	if len(messages) > 0 {
-		err := redisClient.Set(fmt.Sprintf("haveread/%d/%d", userID, chanID), messages[0].ID, 0).Err()
+		err := getRedisClient(userID+chanID).Set(fmt.Sprintf("haveread/%d/%d", userID, chanID), messages[0].ID, 0).Err()
 		if err != nil {
 			return err
 		}
@@ -493,19 +515,28 @@ func queryHaveReads(userID int64, chIDs []int64) ([]int64, error) {
 	for i, chID := range chIDs {
 		keys[i] = fmt.Sprintf("haveread/%d/%d", userID, chID)
 	}
-	results, err := redisClient.MGet(keys...).Result()
-	if err != nil {
-		return []int64{}, err
+	mergedResults := make([]string, len(chIDs))
+	for _, client := range redisClients {
+		results, err := client.MGet(keys...).Result()
+		if err != nil {
+			return []int64{}, err
+		}
+		for j, result := range results {
+			if result != nil {
+				mergedResults[j] = result.(string)
+			}
+		}
 	}
-	messageIds := make([]int64, len(results))
-	for i, result := range results {
-		if result == nil {
+	messageIds := make([]int64, len(chIDs))
+	for i, result := range mergedResults {
+		if result == "" {
 			messageIds[i] = 0
 		} else {
-			messageIds[i], err = strconv.ParseInt(result.(string), 10, 64)
+			id, err := strconv.ParseInt(result, 10, 64)
 			if err != nil {
 				return messageIds, err
 			}
+			messageIds[i] = id
 		}
 	}
 	return messageIds, nil
@@ -539,16 +570,24 @@ func fetchUnread(c echo.Context) error {
 			zeroChannelsStr = append(zeroChannelsStr, strconv.FormatInt(chID, 10))
 		}
 	}
-	results, err := redisClient.HMGet("message_count", zeroChannelsStr...).Result()
-	if err != nil {
-		return err
+	mergedResults := make([]string, len(zeroChannels))
+	for _, client := range redisClients {
+		results, err := client.HMGet("message_count", zeroChannelsStr...).Result()
+		if err != nil {
+			return err
+		}
+		for j, result := range results {
+			if result != nil {
+				mergedResults[j] = result.(string)
+			}
+		}
 	}
 	messageCounts := make(map[int64]int64, len(zeroChannels))
-	for i, result := range results {
-		if result == nil {
+	for i, result := range mergedResults {
+		if result == "" {
 			messageCounts[zeroChannels[i]] = 0
 		} else {
-			messageCounts[zeroChannels[i]], err = strconv.ParseInt(result.(string), 10, 64)
+			messageCounts[zeroChannels[i]], err = strconv.ParseInt(result, 10, 64)
 			if err != nil {
 				return err
 			}
@@ -606,7 +645,7 @@ func getHistory(c echo.Context) error {
 
 	const N = 20
 	var cnt int64
-	res := redisClient.HGet("message_count", fmt.Sprintf("%d", chID))
+	res := getRedisClient(chID).HGet("message_count", fmt.Sprintf("%d", chID))
 	cnt, err = res.Int64()
 	if err == redis.Nil {
 		cnt = 0
@@ -776,7 +815,7 @@ func postProfile(c echo.Context) error {
 	}
 
 	if avatarName != "" && len(avatarData) > 0 {
-		err := redisClient.Set(fmt.Sprintf("icons/%s", avatarName), avatarData, 0).Err()
+		err := getRedisClient(iconKey(avatarName)).Set(fmt.Sprintf("icons/%s", avatarName), avatarData, 0).Err()
 		if err != nil {
 			return err
 		}
@@ -807,7 +846,7 @@ func getIcon(c echo.Context) error {
 		return c.NoContent(304)
 	}
 
-	data, err := redisClient.Get(fmt.Sprintf("icons/%s", name)).Bytes()
+	data, err := getRedisClient(iconKey(name)).Get(fmt.Sprintf("icons/%s", name)).Bytes()
 	if err == redis.Nil {
 		return echo.ErrNotFound
 	}
